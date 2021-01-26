@@ -37,6 +37,9 @@
 #include "symbols.h"
 #include "vmStructs.h"
 
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 
 Profiler Profiler::_instance;
 
@@ -262,6 +265,15 @@ NativeCodeCache* Profiler::findNativeLibrary(const void* address) {
 const char* Profiler::findNativeMethod(const void* address) {
     NativeCodeCache* lib = findNativeLibrary(address);
     return lib == NULL ? NULL : lib->binarySearch(address);
+}
+
+const void Profiler::setOutput(std::ofstream* out) {
+    _output = out;
+}
+
+const void Profiler::clearOutput() {
+    delete _output;
+    _output = NULL;
 }
 
 // When thread is in Java state, it should have Java frame somewhere on the top of the stack
@@ -567,6 +579,34 @@ AddressType Profiler::getAddressType(instruction_t* pc) {
     return ADDR_UNKNOWN;
 }
 
+/*
+{ "timestamp": 12345,
+  "tid": 1212,
+  "frames": [
+    { bci: 1234, methodId: 1234, symbol: "java/lang/net...." }
+  ]
+*/
+void Profiler::dumpJsonEvent(std::ostream& out, int tid, CallTraceSample& trace, FrameName& fn) {
+    json event = {
+        { "timestamp", OS::millis() },
+        { "tid", tid },
+    };
+    json frames = json::array();
+
+    for (int i = 0; i < trace._num_frames; i++) {
+        ASGCT_CallFrame& frame = _frame_buffer[trace._start_frame + i];
+        const char* frame_name = fn.name(frame);
+        json jframe = json::object();
+        jframe["bci"] = frame.bci;
+        jframe["methodId"] = (uintptr_t) frame.method_id;
+        jframe["symbol"] = std::string(frame_name);
+        frames.push_back(jframe);
+    }
+    event["frames"] = frames;
+
+    out << event << "\n";
+}
+
 void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state) {
     int tid = OS::threadId();
 
@@ -617,6 +657,11 @@ void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmetho
     storeMethod(frames[0].method_id, frames[0].bci, counter);
     int call_trace_id = storeCallTrace(num_frames, frames, counter);
     _jfr.recordExecutionSample(lock_index, tid, call_trace_id, thread_state);
+
+    Arguments args;
+    FrameName fn(args, args._style | STYLE_DOTTED, _thread_names_lock, _thread_names);
+    dumpJsonEvent(*_output, tid, _traces[call_trace_id], fn);
+    _output->flush();
 
     _locks[lock_index].unlock();
 }
@@ -1219,6 +1264,7 @@ void Profiler::runInternal(Arguments& args, std::ostream& out) {
             break;
         case ACTION_DUMP:
             stop();
+            clearOutput();
             switch (args._output) {
                 case OUTPUT_COLLAPSED:
                     dumpCollapsed(out, args);
@@ -1248,6 +1294,9 @@ void Profiler::run(Arguments& args) {
         runInternal(args, std::cout);
     } else {
         std::ofstream out(args._file, std::ios::out | std::ios::trunc);
+        if (args._output == OUTPUT_STREAM) {
+            setOutput(new std::ofstream(args._file, std::ios::out));
+        }
         if (out.is_open()) {
             runInternal(args, out);
             out.close();

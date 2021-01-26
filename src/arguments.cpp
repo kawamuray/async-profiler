@@ -153,6 +153,10 @@ Error Arguments::parse(const char* args) {
                 _output = OUTPUT_TEXT;
                 _dump_traces = value == NULL ? INT_MAX : atoi(value);
 
+            CASE("stream")
+                _output = OUTPUT_STREAM;
+                _dump_traces = value == NULL ? INT_MAX : atoi(value);
+
             CASE("flat")
                 _output = OUTPUT_TEXT;
                 _dump_flat = value == NULL ? INT_MAX : atoi(value);

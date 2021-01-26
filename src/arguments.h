@@ -74,7 +74,8 @@ enum Output {
     OUTPUT_COLLAPSED,
     OUTPUT_FLAMEGRAPH,
     OUTPUT_TREE,
-    OUTPUT_JFR
+    OUTPUT_JFR,
+    OUTPUT_STREAM,
 };
 
 
