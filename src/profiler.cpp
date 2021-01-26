@@ -27,6 +27,7 @@
 #include "allocTracer.h"
 #include "lockTracer.h"
 #include "wallClock.h"
+#include "noneEvent.h"
 #include "instrument.h"
 #include "itimer.h"
 #include "flameGraph.h"
@@ -48,6 +49,7 @@ static AllocTracer alloc_tracer;
 static LockTracer lock_tracer;
 static WallClock wall_clock;
 static ITimer itimer;
+static NoneEvent none_event;
 static Instrument instrument;
 
 
@@ -855,6 +857,8 @@ Engine* Profiler::selectEngine(const char* event_name) {
         return &wall_clock;
     } else if (strcmp(event_name, EVENT_ITIMER) == 0) {
         return &itimer;
+    } else if (strcmp(event_name, EVENT_NONE) == 0) {
+        return &none_event;
     } else if (strchr(event_name, '.') != NULL) {
         return &instrument;
     } else {
@@ -1292,11 +1296,13 @@ void Profiler::runInternal(Arguments& args, std::ostream& out) {
 void Profiler::run(Arguments& args) {
     if (args._file == NULL || args._output == OUTPUT_JFR) {
         runInternal(args, std::cout);
+    } else if (args._output == OUTPUT_STREAM) {
+        if (args._action == ACTION_START) {
+            setOutput(new std::ofstream(args._file, std::ios::out|std::ios::trunc));
+        }
+        runInternal(args, std::cout);
     } else {
         std::ofstream out(args._file, std::ios::out | std::ios::trunc);
-        if (args._output == OUTPUT_STREAM) {
-            setOutput(new std::ofstream(args._file, std::ios::out));
-        }
         if (out.is_open()) {
             runInternal(args, out);
             out.close();
