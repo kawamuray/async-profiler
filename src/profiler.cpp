@@ -17,6 +17,7 @@
 #include <fstream>
 #include <dlfcn.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -269,13 +270,15 @@ const char* Profiler::findNativeMethod(const void* address) {
     return lib == NULL ? NULL : lib->binarySearch(address);
 }
 
-const void Profiler::setOutput(std::ofstream* out) {
-    _output = out;
+const void Profiler::setOutput(int fd) {
+    _out_fd = fd;
 }
 
 const void Profiler::clearOutput() {
-    delete _output;
-    _output = NULL;
+    if (_out_fd >= 0) {
+        close(_out_fd);
+        _out_fd = -1;
+    }
 }
 
 // When thread is in Java state, it should have Java frame somewhere on the top of the stack
@@ -588,7 +591,7 @@ AddressType Profiler::getAddressType(instruction_t* pc) {
     { bci: 1234, methodId: 1234, symbol: "java/lang/net...." }
   ]
 */
-void Profiler::dumpJsonEvent(std::ostream& out, int tid, CallTraceSample& trace, FrameName& fn) {
+void Profiler::dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace, FrameName& fn) {
     json event = {
         { "timestamp", OS::millis() },
         { "tid", tid },
@@ -606,7 +609,11 @@ void Profiler::dumpJsonEvent(std::ostream& out, int tid, CallTraceSample& trace,
     }
     event["frames"] = frames;
 
-    out << event << "\n";
+    std::string json_line = event.dump();
+    json_line.push_back('\n');
+    if (write(out_fd, json_line.c_str(), json_line.length()) < 0) {
+        std::cerr << "Failed to write a JSON to file" << std::endl;
+    }
 }
 
 void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state) {
@@ -662,8 +669,7 @@ void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmetho
 
     Arguments args;
     FrameName fn(args, args._style | STYLE_DOTTED, _thread_names_lock, _thread_names);
-    dumpJsonEvent(*_output, tid, _traces[call_trace_id], fn);
-    _output->flush();
+    dumpJsonEvent(_out_fd, tid, _traces[call_trace_id], fn);
 
     _locks[lock_index].unlock();
 }
@@ -1298,7 +1304,12 @@ void Profiler::run(Arguments& args) {
         runInternal(args, std::cout);
     } else if (args._output == OUTPUT_STREAM) {
         if (args._action == ACTION_START) {
-            setOutput(new std::ofstream(args._file, std::ios::out|std::ios::trunc));
+            int out_fd = open(args._file, O_CREAT|O_WRONLY|O_TRUNC);
+            if (out_fd == -1) {
+                std::cerr << "Failed to open the output file" << std::endl;
+                return;
+            }
+            setOutput(out_fd);
         }
         runInternal(args, std::cout);
     } else {

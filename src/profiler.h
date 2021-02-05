@@ -138,7 +138,7 @@ class Profiler {
     NativeCodeCache _runtime_stubs;
     NativeCodeCache* _native_libs[MAX_NATIVE_LIBS];
     volatile int _native_lib_count;
-    std::ofstream* _output;
+    int _out_fd;
 
     // Support for intercepting NativeLibrary.load() / NativeLibraries.load()
     JNINativeMethod _load_method;
@@ -201,7 +201,7 @@ class Profiler {
         _java_methods(),
         _runtime_stubs("[stubs]"),
         _native_lib_count(0),
-        _output(NULL),
+        _out_fd(-1),
         _original_NativeLibrary_load(NULL) {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
@@ -225,7 +225,7 @@ class Profiler {
     void dumpSummary(std::ostream& out);
     void dumpCollapsed(std::ostream& out, Arguments& args);
     void dumpFlameGraph(std::ostream& out, Arguments& args, bool tree);
-    void dumpJsonEvent(std::ostream& out, int tid, CallTraceSample& trace, FrameName& fn);
+    void dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace, FrameName& fn);
     void dumpTraces(std::ostream& out, Arguments& args);
     void dumpFlat(std::ostream& out, Arguments& args);
     void recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state = THREAD_RUNNING);
@@ -235,7 +235,7 @@ class Profiler {
     const void* findSymbolByPrefix(const char* name);
     NativeCodeCache* findNativeLibrary(const void* address);
     const char* findNativeMethod(const void* address);
-    const void setOutput(std::ofstream *out);
+    const void setOutput(int fd);
     const void clearOutput();
 
     // CompiledMethodLoad is also needed to enable DebugNonSafepoints info by default
