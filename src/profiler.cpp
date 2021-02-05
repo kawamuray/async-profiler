@@ -22,7 +22,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/param.h>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 #include "profiler.h"
 #include "perfEvents.h"
 #include "allocTracer.h"
@@ -591,7 +595,10 @@ AddressType Profiler::getAddressType(instruction_t* pc) {
     { bci: 1234, methodId: 1234, symbol: "java/lang/net...." }
   ]
 */
-void Profiler::dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace, FrameName& fn) {
+void Profiler::dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace) {
+    Arguments args;
+    FrameName fn(args, args._style | STYLE_DOTTED, _thread_names_lock, _thread_names);
+
     json event = {
         { "timestamp", OS::millis() },
         { "tid", tid },
@@ -667,11 +674,54 @@ void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmetho
     int call_trace_id = storeCallTrace(num_frames, frames, counter);
     _jfr.recordExecutionSample(lock_index, tid, call_trace_id, thread_state);
 
-    Arguments args;
-    FrameName fn(args, args._style | STYLE_DOTTED, _thread_names_lock, _thread_names);
-    dumpJsonEvent(_out_fd, tid, _traces[call_trace_id], fn);
+    TraceEvent ev = { tid, &_traces[call_trace_id] };
+    {
+        std::unique_lock<std::mutex> lck(_trace_events_lock);
+        _trace_events.push(ev);
+        _trace_events_cv.notify_one();
+    }
 
     _locks[lock_index].unlock();
+}
+
+static void* eventWriterThreadEntry(void* profiler) {
+    ((Profiler*)profiler)->eventWriterLoop();
+    return NULL;
+}
+
+void Profiler::startEventWriter() {
+    if (_event_writer_thread) {
+        return;
+    }
+    if (pthread_create(&_event_writer_thread, NULL, eventWriterThreadEntry, this) != 0) {
+        std::cerr << "Failed to create a thread for dumping events" << std::endl;
+    }
+}
+
+void Profiler::eventWriterLoop() {
+    // Need to attach this thread to JVM to make a call for JVMTI methods
+    // JavaVM* jvm;
+    // VM::jni()->GetJavaVM(&jvm);
+    void *env_ptr;
+    if (VM::vm()->AttachCurrentThread(&env_ptr, NULL) != JNI_OK) {
+        std::cerr << "Failed to attach event writer thread to JVM" << std::endl;
+    }
+
+    TraceEvent ev = { 0, nullptr };
+    while (true) {
+        {
+            std::unique_lock<std::mutex> lck(_trace_events_lock);
+            _trace_events_cv.wait(lck, [this]{ return !_trace_events.empty(); });
+            if (!_trace_events.empty()) {
+                ev = _trace_events.front();
+                _trace_events.pop();
+            }
+        }
+        if (ev.tid) {
+            dumpJsonEvent(_out_fd, ev.tid, *ev.trace);
+            ev = { 0, nullptr };
+        }
+    }
 }
 
 jboolean JNICALL Profiler::NativeLibraryLoadTrap(JNIEnv* env, jobject self, jstring name, jboolean builtin) {
@@ -1310,6 +1360,7 @@ void Profiler::run(Arguments& args) {
                 return;
             }
             setOutput(out_fd);
+            startEventWriter();
         }
         runInternal(args, std::cout);
     } else {

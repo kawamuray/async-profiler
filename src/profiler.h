@@ -19,6 +19,9 @@
 
 #include <iostream>
 #include <map>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 #include <time.h>
 #include "arch.h"
 #include "arguments.h"
@@ -100,6 +103,11 @@ enum State {
     TERMINATED
 };
 
+struct TraceEvent {
+    int tid;
+    CallTraceSample* trace;
+};
+
 class Profiler {
   private:
     Mutex _state_lock;
@@ -138,7 +146,12 @@ class Profiler {
     NativeCodeCache _runtime_stubs;
     NativeCodeCache* _native_libs[MAX_NATIVE_LIBS];
     volatile int _native_lib_count;
-    int _out_fd;
+    volatile int _out_fd;
+    std::mutex _trace_events_lock;
+    std::condition_variable _trace_events_cv;
+    std::queue<TraceEvent> _trace_events;
+    pthread_t _event_writer_thread;
+
 
     // Support for intercepting NativeLibrary.load() / NativeLibraries.load()
     JNINativeMethod _load_method;
@@ -202,6 +215,10 @@ class Profiler {
         _runtime_stubs("[stubs]"),
         _native_lib_count(0),
         _out_fd(-1),
+        _trace_events_lock(),
+        _trace_events_cv(),
+        _trace_events(),
+        _event_writer_thread(),
         _original_NativeLibrary_load(NULL) {
 
         for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
@@ -225,10 +242,12 @@ class Profiler {
     void dumpSummary(std::ostream& out);
     void dumpCollapsed(std::ostream& out, Arguments& args);
     void dumpFlameGraph(std::ostream& out, Arguments& args, bool tree);
-    void dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace, FrameName& fn);
+    void dumpJsonEvent(int out_fd, int tid, CallTraceSample& trace);
     void dumpTraces(std::ostream& out, Arguments& args);
     void dumpFlat(std::ostream& out, Arguments& args);
     void recordSample(void* ucontext, u64 counter, jint event_type, jmethodID event, ThreadState thread_state = THREAD_RUNNING);
+    void startEventWriter();
+    void eventWriterLoop();
 
     void updateSymbols(bool kernel_symbols);
     const void* findSymbol(const char* name);
