@@ -24,9 +24,6 @@
 #include <string.h>
 #include <pthread.h>
 #include <sys/param.h>
-#include <queue>
-#include <mutex>
-#include <condition_variable>
 #include "profiler.h"
 #include "perfEvents.h"
 #include "allocTracer.h"
@@ -675,10 +672,8 @@ void Profiler::recordSample(void* ucontext, u64 counter, jint event_type, jmetho
     _jfr.recordExecutionSample(lock_index, tid, call_trace_id, thread_state);
 
     TraceEvent ev = { tid, &_traces[call_trace_id] };
-    {
-        std::unique_lock<std::mutex> lck(_trace_events_lock);
-        _trace_events.push(ev);
-        _trace_events_cv.notify_one();
+    if (!_trace_events.push(ev)) {
+        std::cerr << "Trace events overflow, dropping event: " << _trace_events.size() << std::endl;
     }
 
     _locks[lock_index].unlock();
@@ -707,16 +702,8 @@ void Profiler::eventWriterLoop() {
         std::cerr << "Failed to attach event writer thread to JVM" << std::endl;
     }
 
-    TraceEvent ev = { 0, nullptr };
     while (true) {
-        {
-            std::unique_lock<std::mutex> lck(_trace_events_lock);
-            _trace_events_cv.wait(lck, [this]{ return !_trace_events.empty(); });
-            if (!_trace_events.empty()) {
-                ev = _trace_events.front();
-                _trace_events.pop();
-            }
-        }
+        TraceEvent ev = _trace_events.poll();
         if (ev.tid) {
             dumpJsonEvent(_out_fd, ev.tid, *ev.trace);
             ev = { 0, nullptr };

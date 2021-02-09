@@ -108,6 +108,61 @@ struct TraceEvent {
     CallTraceSample* trace;
 };
 
+class TraceEventRingBuffer {
+private:
+    TraceEvent buf[100];
+    size_t read_i;
+    size_t write_i;
+    std::mutex lock;
+    std::condition_variable cv;
+
+    static size_t cap() {
+        return sizeof(buf) / sizeof(*buf);
+    }
+
+    static size_t inc_pos(size_t* pos) {
+        size_t cur = *pos;
+        *pos = (*pos + 1) % cap();
+        return cur;
+    }
+
+public:
+    TraceEventRingBuffer() :
+        buf(),
+        read_i(0),
+        write_i(0),
+        lock(),
+        cv() {
+    }
+
+    size_t size() {
+        if (read_i > write_i) {
+            return write_i + cap() - read_i;
+        } else {
+            return write_i - read_i;
+        }
+    }
+
+    bool push(TraceEvent ev) {
+        std::unique_lock<std::mutex> lck(lock);
+        if (size() == cap()) {
+            return false;
+        }
+        buf[inc_pos(&write_i)] = ev;
+        cv.notify_one();
+        return true;
+    }
+
+    TraceEvent poll() {
+        std::unique_lock<std::mutex> lck(lock);
+        cv.wait(lck, [this]{ return size() > 0; });
+        if (size() > 0) {
+            return buf[inc_pos(&read_i)];
+        }
+        return (TraceEvent) { 0, nullptr };
+    }
+};
+
 class Profiler {
   private:
     Mutex _state_lock;
@@ -147,9 +202,7 @@ class Profiler {
     NativeCodeCache* _native_libs[MAX_NATIVE_LIBS];
     volatile int _native_lib_count;
     volatile int _out_fd;
-    std::mutex _trace_events_lock;
-    std::condition_variable _trace_events_cv;
-    std::queue<TraceEvent> _trace_events;
+    TraceEventRingBuffer _trace_events;
     pthread_t _event_writer_thread;
 
 
@@ -215,8 +268,6 @@ class Profiler {
         _runtime_stubs("[stubs]"),
         _native_lib_count(0),
         _out_fd(-1),
-        _trace_events_lock(),
-        _trace_events_cv(),
         _trace_events(),
         _event_writer_thread(),
         _original_NativeLibrary_load(NULL) {
