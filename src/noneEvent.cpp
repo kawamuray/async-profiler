@@ -3,7 +3,9 @@
 #include "noneEvent.h"
 
 void NoneEvent::signalHandler(int signo, siginfo_t* siginfo, void* ucontext) {
-    Profiler::_instance.recordSample(ucontext, 1, 0, NULL);
+    if (!Profiler::_instance.isEventWriterThread()) {
+        Profiler::_instance.recordSample(ucontext, 1, 0, NULL);
+    }
 }
 
 Error NoneEvent::start(Arguments& args) {

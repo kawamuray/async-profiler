@@ -283,6 +283,10 @@ class Profiler {
 
     ThreadFilter* threadFilter() { return &_thread_filter; }
 
+    bool isEventWriterThread() {
+        return pthread_equal(pthread_self(), _event_writer_thread);
+    }
+
     void run(Arguments& args);
     void runInternal(Arguments& args, std::ostream& out);
     void shutdown(Arguments& args);
